@@ -26,24 +26,82 @@
 #define NOTE_D5   587  // #
 #define NOTE_DS5  622  // D (D#)
 
+//Attack/decay envelope parameters
+#define ENVELOPE_STEPS 10
+#define ENVELOPE_DELAY_US 500
+
 uint slice_num;
 uint channel;
+uint16_t current_top_value = 0;
 
-//set PWM frequency for a given note
 void set_note_frequency(uint16_t freq) {
     if (freq == 0) {
         pwm_set_gpio_level(AUDIO_PIN, 0);
+        current_top_value = 0;
         return;
     }
     
     uint32_t clock_freq = clock_get_hz(clk_sys);
-    uint32_t divider = clock_freq / (freq * 4096); //4096 is wrap val
+    uint32_t top_value = (clock_freq / freq) - 1;
     
-    if (divider < 1) divider = 1;
+    // if TOP exceeds 16-bit limit, apply divider
+    if (top_value > 65535) {
+        uint32_t divider = 2;
+        while (top_value > 65535 && divider < 256) {
+            top_value = (clock_freq / (freq * divider)) - 1;
+            divider++;
+        }
+        pwm_set_clkdiv(slice_num, (float)divider);
+    } else {
+        pwm_set_clkdiv(slice_num, 1.0f);
+    }
     
-    pwm_set_clkdiv(slice_num, (float)divider);
-    pwm_set_wrap(slice_num, 4095);
-    pwm_set_gpio_level(AUDIO_PIN, 2048); //50% duty
+    pwm_set_wrap(slice_num, top_value);
+    
+    // 50% duty cycle
+    pwm_set_gpio_level(AUDIO_PIN, top_value / 2);
+    
+    current_top_value = top_value;
+}
+
+//attack envelope to eliminate clicking sounds
+void apply_attack_envelope() {
+    if (current_top_value == 0) return;
+    
+    uint16_t target_level = current_top_value / 2;
+    
+    for (int i = 1; i <= ENVELOPE_STEPS; i++) {
+        uint16_t level = (target_level * i) / ENVELOPE_STEPS;
+        pwm_set_gpio_level(AUDIO_PIN, level);
+        sleep_us(ENVELOPE_DELAY_US);
+    }
+}
+
+//decay envelope to eliminate clicking sounds
+void apply_decay_envelope() {
+    if (current_top_value == 0) return;
+    
+    uint16_t start_level = current_top_value / 2;
+    
+    for (int i = ENVELOPE_STEPS; i >= 0; i--) {
+        uint16_t level = (start_level * i) / ENVELOPE_STEPS;
+        pwm_set_gpio_level(AUDIO_PIN, level);
+        sleep_us(ENVELOPE_DELAY_US);
+    }
+}
+
+//play with attack envelope
+void play_note(uint16_t freq) {
+    set_note_frequency(freq);
+    if (freq > 0) {
+        apply_attack_envelope();
+    }
+}
+
+//stop with decay envelope
+void stop_note() {
+    apply_decay_envelope();
+    set_note_frequency(0);
 }
 
 uint16_t key_to_frequency(char key) {
@@ -111,10 +169,10 @@ int main() {
             
             if (pressed) {
                 uint16_t freq = key_to_frequency(key);
-                set_note_frequency(freq);
-                printf("Key '%c' pressed - Playing %d Hz\n", key, freq);
+                play_note(freq);
+                printf("Key '%c' pressed - Playing %d Hz (TOP=%d)\n", key, freq, current_top_value);
             } else {
-                set_note_frequency(0);
+                stop_note();
                 printf("Key '%c' released - Silence\n", key);
             }
         }
