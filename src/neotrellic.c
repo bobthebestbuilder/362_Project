@@ -7,6 +7,7 @@
 
 // === PWM AUDIO SETUP ===
 #define BUZZER_PIN 15  // Change this to whatever GPIO pin you want to use
+#define SYS_CLK_FREQ 150000000  // RP2350 runs at 150 MHz (RP2040 is 125 MHz)
 
 // Musical notes (frequencies in Hz) - chromatic scale starting at C4
 static const uint16_t notes[16] = {
@@ -40,12 +41,19 @@ void pwm_audio_init(void) {
     gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
     slice_num = pwm_gpio_to_slice_num(BUZZER_PIN);
     
+    // Start with PWM disabled
     pwm_set_enabled(slice_num, false);
-    pwm_set_wrap(slice_num, 1000);
-    pwm_set_chan_level(slice_num, PWM_CHAN_A, 0);
+    
+    // Set clock divider to 1 (no division) for maximum precision
+    pwm_set_clkdiv(slice_num, 1.0f);
+    
+    printf("[PWM] Audio init: GPIO %d, Slice %d, Clock %d Hz\n", 
+           BUZZER_PIN, slice_num, SYS_CLK_FREQ);
 }
 
-// Play a tone at specified frequency
+// Play a tone at specified frequency using the correct formula from project overview
+// f_note = f_clk / (TOP + 1)
+// Therefore: TOP = (f_clk / f_note) - 1
 void pwm_play_tone(uint16_t frequency) {
     if (frequency == 0) {
         pwm_set_enabled(slice_num, false);
@@ -53,16 +61,21 @@ void pwm_play_tone(uint16_t frequency) {
         return;
     }
     
-    // Calculate PWM parameters for the desired frequency
-    uint32_t clock_freq = 125000000;  // Pico runs at 125 MHz
-    uint32_t divider = clock_freq / (frequency * 1000);
+    // Calculate TOP value: TOP = (f_clk / f_note) - 1
+    uint32_t top = (SYS_CLK_FREQ / frequency) - 1;
     
-    pwm_set_clkdiv(slice_num, (float)divider);
-    pwm_set_wrap(slice_num, 999);
-    pwm_set_chan_level(slice_num, PWM_CHAN_A, 500);  // 50% duty cycle
+    // Set 50% duty cycle for clean square wave
+    uint32_t level = top / 2;
+    
+    pwm_set_wrap(slice_num, top);
+    pwm_set_chan_level(slice_num, PWM_CHAN_A, level);
     pwm_set_enabled(slice_num, true);
     
-    printf("♪ Playing %d Hz\n", frequency);
+    // Calculate actual frequency for verification
+    float actual_freq = (float)SYS_CLK_FREQ / (top + 1);
+    
+    printf("♪ Playing %d Hz (actual: %.1f Hz, TOP=%u)\n", 
+           frequency, actual_freq, top);
 }
 
 // Play a note by button index
